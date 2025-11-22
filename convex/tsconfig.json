@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "lib": ["ES2021"],
+    "types": []
+  },
+  "include": ["./**/*"],
+  "exclude": ["node_modules"]
+}
