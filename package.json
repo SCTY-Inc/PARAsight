@@ -5,9 +5,10 @@
   "main": "index.js",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run convex:codegen && next build",
     "start": "next start",
-    "convex": "convex dev"
+    "convex": "convex dev",
+    "convex:codegen": "convex deploy --cmd true --preview-name preview"
   },
   "keywords": [],
   "author": "",
