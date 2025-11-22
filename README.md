@@ -18,32 +18,46 @@ PARA is a method for organizing digital information into four categories:
 npm install
 ```
 
-### 2. Configure Google Gemini API
+### 2. Configure Convex
+
+1. Create a Convex account at [convex.dev](https://convex.dev)
+2. Run the Convex development server:
+   ```bash
+   npm run convex
+   ```
+3. Follow the prompts to create a new project or link to an existing one
+4. This will create a `.env.local` file with your `CONVEX_DEPLOYMENT` and `NEXT_PUBLIC_CONVEX_URL`
+
+### 3. Configure Google Gemini API
 
 1. Get API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. Set your Gemini API key in Convex:
+   ```bash
+   npx convex env set GEMINI_API_KEY your_gemini_api_key
+   ```
 
-### 3. Configure Convex
-
-1. Run `npx convex dev` to create a new Convex project
-2. Note the deployment URL
-
-### 4. Set Environment Variables
-
-Set your Gemini API key in Convex:
-
-```bash
-npx convex env set GEMINI_API_KEY your_gemini_api_key
-```
-
-### 5. Run Development Server
+### 4. Run Development Server
 
 ```bash
 # Terminal 1: Run Convex backend
-npx convex dev
+npm run convex
 
 # Terminal 2: Run Next.js frontend
 npm run dev
 ```
+
+The app will be available at http://localhost:3000
+
+## Deployment
+
+For production deployment to Cloudflare Pages, see [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.
+
+### Quick Deployment Steps:
+
+1. Set `CONVEX_DEPLOY_KEY` in your Cloudflare Pages environment variables
+2. Optionally set `NEXT_PUBLIC_CONVEX_URL` to `https://bright-ermine-704.convex.cloud`
+3. Build command: `npm run build`
+4. Output directory: `out`
 
 ## Usage
 

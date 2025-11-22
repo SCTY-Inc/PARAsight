@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "next dev",
-    "build": "npm run convex:codegen && next build",
+    "build": "./build.sh",
     "start": "next start",
     "convex": "convex dev",
     "convex:codegen": "convex deploy --cmd true --preview-name preview"
