@@ -1,16 +1,25 @@
 import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 
-// Normalize URL for deduplication (remove tracking params, trailing slashes, etc.)
+// Normalize URL for deduplication (remove tracking params, trailing slashes, www, etc.)
 function normalizeUrl(url: string): string {
   try {
     const urlObj = new URL(url);
+
+    // Normalize protocol to https
+    urlObj.protocol = 'https:';
+
+    // Remove www prefix
+    urlObj.hostname = urlObj.hostname.replace(/^www\./, '');
+
+    // Remove hash/fragment
+    urlObj.hash = '';
 
     // Remove common tracking parameters
     const trackingParams = [
       'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
       '_bhlid', 'ref', 'source', 'fbclid', 'gclid', 'msclkid',
-      'mc_cid', 'mc_eid', '_hsenc', '_hsmi',
+      'mc_cid', 'mc_eid', '_hsenc', '_hsmi', 'si', 's', 't',
     ];
 
     trackingParams.forEach(param => {
@@ -187,5 +196,69 @@ export const renameSubcategory = internalMutation({
     for (const link of links) {
       await ctx.db.patch(link._id, { subcategory: cleanNew });
     }
+  },
+});
+
+// Helper to normalize URL (same logic as above, exported for reuse)
+function normalizeUrlForCleanup(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    urlObj.protocol = 'https:';
+    urlObj.hostname = urlObj.hostname.replace(/^www\./, '');
+    urlObj.hash = '';
+    const trackingParams = [
+      'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+      '_bhlid', 'ref', 'source', 'fbclid', 'gclid', 'msclkid',
+      'mc_cid', 'mc_eid', '_hsenc', '_hsmi', 'si', 's', 't',
+    ];
+    trackingParams.forEach(param => urlObj.searchParams.delete(param));
+    if (urlObj.pathname.endsWith('/') && urlObj.pathname.length > 1) {
+      urlObj.pathname = urlObj.pathname.slice(0, -1);
+    }
+    urlObj.searchParams.sort();
+    return urlObj.toString().toLowerCase();
+  } catch {
+    return url.toLowerCase();
+  }
+}
+
+// One-time cleanup: remove duplicate links (keeps the oldest)
+export const deduplicateLinks = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const allLinks = await ctx.db.query("links").collect();
+
+    // Group by normalized URL
+    const urlGroups = new Map<string, typeof allLinks>();
+
+    for (const link of allLinks) {
+      const normalized = normalizeUrlForCleanup(link.url);
+      const group = urlGroups.get(normalized) || [];
+      group.push(link);
+      urlGroups.set(normalized, group);
+    }
+
+    let deletedCount = 0;
+
+    for (const [normalizedUrl, links] of urlGroups) {
+      if (links.length > 1) {
+        // Sort by creation date, keep oldest
+        links.sort((a, b) => {
+          const dateA = new Date(a.createdAt || 0).getTime();
+          const dateB = new Date(b.createdAt || 0).getTime();
+          return dateA - dateB;
+        });
+
+        // Delete all but the first (oldest)
+        for (let i = 1; i < links.length; i++) {
+          console.log(`Deleting duplicate: ${links[i].url} (keeping ${links[0].url})`);
+          await ctx.db.delete(links[i]._id);
+          deletedCount++;
+        }
+      }
+    }
+
+    console.log(`Deduplication complete: removed ${deletedCount} duplicates`);
+    return { deletedCount, totalBefore: allLinks.length, totalAfter: allLinks.length - deletedCount };
   },
 });

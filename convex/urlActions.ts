@@ -43,6 +43,79 @@ Return ONLY valid JSON in this exact format:
   }
 }`;
 
+// Check if URL is a Twitter/X tweet
+function isTweetUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+    return (hostname.includes("twitter.com") || hostname.includes("x.com")) &&
+           parsed.pathname.includes("/status/");
+  } catch {
+    return false;
+  }
+}
+
+// Extract links from a tweet using Twitter's oEmbed API
+async function extractLinksFromTweet(tweetUrl: string): Promise<string[]> {
+  try {
+    const axios = (await import("axios")).default;
+
+    // Normalize URL (x.com -> twitter.com for oEmbed)
+    const normalizedUrl = tweetUrl.replace("x.com", "twitter.com");
+
+    // Use Twitter's oEmbed API to get tweet HTML
+    const oEmbedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(normalizedUrl)}&omit_script=true`;
+    console.log(`Fetching tweet oEmbed: ${oEmbedUrl}`);
+
+    const response = await axios.get(oEmbedUrl, { timeout: 10000 });
+    const html = response.data?.html || "";
+
+    // Extract all URLs from the tweet HTML
+    // Look for links that aren't twitter.com (external links)
+    const linkRegex = /href="(https?:\/\/[^"]+)"/g;
+    const links: string[] = [];
+    let match;
+
+    while ((match = linkRegex.exec(html)) !== null) {
+      const link = match[1];
+      // Skip twitter/x.com internal links (hashtags, mentions, etc.)
+      if (!link.includes("twitter.com") && !link.includes("x.com")) {
+        links.push(link);
+      }
+    }
+
+    // Also look for t.co links and resolve them
+    const tcoRegex = /https?:\/\/t\.co\/[a-zA-Z0-9]+/g;
+    const tcoLinks = html.match(tcoRegex) || [];
+
+    for (const tcoLink of tcoLinks) {
+      try {
+        // Resolve t.co redirect to get actual URL
+        const resolved = await axios.head(tcoLink, {
+          timeout: 5000,
+          maxRedirects: 5,
+          validateStatus: () => true,
+        });
+        const finalUrl = resolved.request?.res?.responseUrl || resolved.headers?.location;
+        if (finalUrl && !finalUrl.includes("twitter.com") && !finalUrl.includes("x.com") && !finalUrl.includes("t.co")) {
+          links.push(finalUrl);
+        }
+      } catch (e) {
+        console.warn(`Failed to resolve t.co link: ${tcoLink}`);
+      }
+    }
+
+    // Deduplicate
+    const uniqueLinks = [...new Set(links)];
+    console.log(`Extracted ${uniqueLinks.length} links from tweet: ${uniqueLinks.join(", ")}`);
+
+    return uniqueLinks;
+  } catch (error: any) {
+    console.error(`Failed to extract links from tweet: ${error.message}`);
+    return [];
+  }
+}
+
 // Fetch metadata for arXiv IDs via the official API (more reliable than HTML scraping)
 async function fetchArxivMetadata(paperId: string): Promise<{ title: string | null; description: string | null }> {
   try {
@@ -307,47 +380,89 @@ export const processSingleUrl = internalAction({
     url: v.string(),
     sourceNote: v.optional(v.string()),
   },
-  handler: async (ctx, args): Promise<{ success: boolean; linkId?: any; error?: string }> => {
+  handler: async (ctx, args): Promise<{ success: boolean; linkId?: any; error?: string; extractedUrls?: string[] }> => {
     try {
       console.log(`Processing URL: ${args.url}`);
 
-      // Fetch metadata from the URL
-      const { title, description } = await fetchUrlMetadata(args.url);
+      // Check if this is a tweet - if so, extract linked URLs
+      if (isTweetUrl(args.url)) {
+        console.log(`Detected tweet URL, extracting linked URLs...`);
+        const extractedUrls = await extractLinksFromTweet(args.url);
 
-      // Classify the link first to get AI-generated summary
-      const classification = await classifyUrl(args.url, title, description, args.sourceNote);
+        if (extractedUrls.length > 0) {
+          console.log(`Found ${extractedUrls.length} links in tweet, processing those instead`);
 
-      // Use AI summary if description is missing or too short
-      const finalDescription = description && description.length > 20
-        ? description
-        : classification?.summary || description;
+          // Process each extracted URL
+          const results: any[] = [];
+          for (const extractedUrl of extractedUrls) {
+            // Recursively process the extracted URL
+            const result = await processUrlDirect(ctx, extractedUrl, args.sourceNote ? `via tweet: ${args.sourceNote}` : "via tweet");
+            results.push(result);
+          }
 
-      // Store the link with improved description
-      const linkId: any = await ctx.runMutation(internal.linkMutations.storeLink, {
-        url: args.url,
-        title,
-        description: finalDescription,
-        sourceNote: args.sourceNote,
-      });
+          // Return success if at least one URL was processed
+          const successResults = results.filter((r: any) => r.success);
+          if (successResults.length > 0) {
+            return {
+              success: true,
+              linkId: successResults[0].linkId,
+              extractedUrls,
+            };
+          }
+        }
 
-      if (classification) {
-        await ctx.runMutation(internal.linkMutations.applyClassification, {
-          linkId,
-          para: classification.para,
-          tags: classification.tags || [],
-          subcategory: classification.subcategory || null,
-        });
-
-        console.log(`Classified link ${linkId}: ${classification.para.bucket} > ${classification.subcategory || 'Uncategorized'}`);
+        // If no links extracted, fall through to process the tweet itself
+        console.log(`No external links found in tweet, saving tweet URL itself`);
       }
 
-      return { success: true, linkId };
+      // Standard URL processing
+      return await processUrlDirect(ctx, args.url, args.sourceNote);
     } catch (error) {
       console.error(`Error processing URL ${args.url}:`, error);
       return { success: false, error: String(error) };
     }
   },
 });
+
+// Direct URL processing (extracted for reuse)
+async function processUrlDirect(ctx: any, url: string, sourceNote?: string): Promise<{ success: boolean; linkId?: any; error?: string }> {
+  try {
+    // Fetch metadata from the URL
+    const { title, description } = await fetchUrlMetadata(url);
+
+    // Classify the link first to get AI-generated summary
+    const classification = await classifyUrl(url, title, description, sourceNote);
+
+    // Use AI summary if description is missing or too short
+    const finalDescription = description && description.length > 20
+      ? description
+      : classification?.summary || description;
+
+    // Store the link with improved description
+    const linkId: any = await ctx.runMutation(internal.linkMutations.storeLink, {
+      url,
+      title,
+      description: finalDescription,
+      sourceNote,
+    });
+
+    if (classification) {
+      await ctx.runMutation(internal.linkMutations.applyClassification, {
+        linkId,
+        para: classification.para,
+        tags: classification.tags || [],
+        subcategory: classification.subcategory || null,
+      });
+
+      console.log(`Classified link ${linkId}: ${classification.para.bucket} > ${classification.subcategory || 'Uncategorized'}`);
+    }
+
+    return { success: true, linkId };
+  } catch (error) {
+    console.error(`Error processing URL ${url}:`, error);
+    return { success: false, error: String(error) };
+  }
+}
 
 // Process multiple URLs from a text list (like Safari tabs from Apple Notes)
 // This is a public action that can be called from the frontend

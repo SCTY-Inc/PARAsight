@@ -25,18 +25,34 @@ export function UrlInput() {
         .map(line => line.trim())
         .filter(line => line.startsWith('http://') || line.startsWith('https://'));
 
-      console.log(`Found ${urls.length} URLs to process`);
+      // Deduplicate to avoid re-processing identical URLs in one paste
+      const uniqueUrls = [...new Set(urls)];
+
+      if (uniqueUrls.length === 0) {
+        alert("No valid URLs found. Include full http(s) URLs.");
+        return;
+      }
 
       // Process URLs in batches
-      await processBatch({
-        urls,
-        sourceNote: sourceNote || undefined,
+      const results = await processBatch({
+        urls: uniqueUrls,
+        sourceNote: sourceNote.trim() || undefined,
       });
 
-      // Clear input after success
-      setUrlText("");
-      setSourceNote("");
-      alert(`Successfully processed ${urls.length} URLs!`);
+      const successCount = results.filter((r) => r.success).length;
+      const failureCount = results.length - successCount;
+
+      if (failureCount === 0) {
+        setUrlText("");
+        setSourceNote("");
+        alert(`Successfully processed ${successCount} URL${successCount === 1 ? "" : "s"}!`);
+      } else {
+        const firstError = results.find((r) => !r.success)?.error;
+        alert(
+          `Processed ${successCount}/${results.length} URLs. ${failureCount} failed.` +
+            (firstError ? ` First error: ${firstError}` : "")
+        );
+      }
     } catch (error) {
       console.error("Error processing URLs:", error);
       alert("Error processing URLs. Check console for details.");
@@ -48,17 +64,27 @@ export function UrlInput() {
   return (
     <div className="url-input-container">
       <form onSubmit={handleSubmit} className="url-input-form">
+        <div className="url-input-row">
+          <input
+            type="text"
+            value={urlText}
+            onChange={(e) => setUrlText(e.target.value)}
+            placeholder="Paste URLs (space or comma separated)"
+            disabled={isProcessing}
+            className="url-input-inline"
+          />
+          <button type="submit" disabled={isProcessing || !urlText.trim()}>
+            {isProcessing ? "..." : "+"}
+          </button>
+        </div>
         <input
           type="text"
-          value={urlText}
-          onChange={(e) => setUrlText(e.target.value)}
-          placeholder="Paste URLs (space or comma separated)"
+          value={sourceNote}
+          onChange={(e) => setSourceNote(e.target.value)}
+          placeholder="Note (optional) e.g. AI Research, Mac Tools"
           disabled={isProcessing}
-          className="url-input-inline"
+          className="url-input-note"
         />
-        <button type="submit" disabled={isProcessing || !urlText.trim()}>
-          {isProcessing ? "..." : "+"}
-        </button>
       </form>
     </div>
   );

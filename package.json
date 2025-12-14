@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "./build.sh",
-    "start": "next start",
+    "start": "npx serve@latest out",
+    "typecheck": "tsc --noEmit",
     "convex": "convex dev",
     "convex:codegen": "convex deploy --cmd true --preview-name preview"
   },
@@ -27,5 +28,8 @@
     "@types/react": "^19.2.6",
     "@types/react-dom": "^19.2.3",
     "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

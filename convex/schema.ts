@@ -10,6 +10,11 @@ export default defineSchema({
     // Source tracking (now from Safari/Apple Notes instead of email)
     sourceNote: v.optional(v.string()), // Optional note/category from user
 
+    // Legacy email source fields (for backwards compatibility)
+    sourceEmailId: v.optional(v.string()),
+    sourceFrom: v.optional(v.string()),
+    sourceSubject: v.optional(v.string()),
+
     // LLM-derived fields
     para: v.union(
       v.object({

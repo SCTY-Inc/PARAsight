@@ -13,15 +13,10 @@ You need to configure the following environment variables in your Cloudflare Pag
 #### Required for Build:
 - `CONVEX_DEPLOY_KEY` - Your Convex deployment key (get this from Convex dashboard)
 
-The build process will automatically extract the `NEXT_PUBLIC_CONVEX_URL` from the Convex deployment.
+The build process will deploy Convex and capture `NEXT_PUBLIC_CONVEX_URL` for the Next.js build.
 
-#### Optional Environment Variables:
-If you have other services configured, add these as well:
-- `GEMINI_API_KEY` - For Google Gemini API
-- `GMAIL_CLIENT_ID` - For Gmail API OAuth
-- `GMAIL_CLIENT_SECRET` - For Gmail API OAuth
-- `GMAIL_REDIRECT_URI` - For Gmail API OAuth callback
-- `GMAIL_REFRESH_TOKEN` - For Gmail API OAuth
+#### Convex Environment Variables (set in Convex, not Cloudflare Pages):
+- `GEMINI_API_KEY` - Google Gemini API key used by Convex actions
 
 ### Build Configuration
 
@@ -60,6 +55,10 @@ For local development:
 2. Run `npm run convex` to start the Convex dev server
 3. Run `npm run dev` to start the Next.js dev server
 4. The `.env.local` file will be automatically populated by Convex
+5. Set your Gemini key in Convex (one-time):
+   ```bash
+   npx convex env set GEMINI_API_KEY your_gemini_api_key
+   ```
 
 ### Manual Build Test
 
