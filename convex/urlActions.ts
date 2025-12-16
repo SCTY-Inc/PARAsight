@@ -3,6 +3,7 @@
 import { action, internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
+import { extractTitleFromUrl } from "./lib/urlUtils";
 
 // PARA Classification Prompt for Links
 const LINK_CLASSIFICATION_PROMPT = `You are a PARA classification system for web links/resources. PARA stands for Projects, Areas, Resources, and Archive.
@@ -255,44 +256,6 @@ async function fetchUrlMetadata(url: string): Promise<{ title: string | null; de
   }
 }
 
-// Extract a human-readable title from URL as fallback
-function extractTitleFromUrl(url: string): string {
-  try {
-    const urlObj = new URL(url);
-    const hostname = urlObj.hostname.replace('www.', '');
-    const path = urlObj.pathname;
-
-    // For GitHub repos: extract owner/repo
-    if (hostname === 'github.com') {
-      const parts = path.split('/').filter(p => p);
-      if (parts.length >= 2) {
-        return `${parts[0]}/${parts[1]}`;
-      }
-    }
-
-    // For arXiv: extract paper ID (works for both /abs/ and /pdf/ paths)
-    // Note: arXiv uses both arxiv.org and export.arxiv.org
-    if (hostname.includes('arxiv.org')) {
-      const match = path.match(/\/(abs|pdf)\/([0-9.]+)/);
-      if (match) {
-        // Remove trailing .pdf if present
-        const paperId = match[2].replace(/\.pdf$/, '');
-        return `arXiv:${paperId}`;
-      }
-    }
-
-    // Generic: use last path segment or domain
-    const lastSegment = path.split('/').filter(p => p).pop();
-    if (lastSegment && lastSegment.length > 3) {
-      return lastSegment.replace(/[-_]/g, ' ').replace(/\.\w+$/, '');
-    }
-
-    return hostname;
-  } catch {
-    return url.substring(0, 50);
-  }
-}
-
 // Classify a single URL using Gemini
 async function classifyUrl(url: string, title: string | null, description: string | null, sourceNote?: string) {
   try {
@@ -384,7 +347,7 @@ export const processSingleUrl = internalAction({
     try {
       console.log(`Processing URL: ${args.url}`);
 
-      // Check if this is a tweet - if so, extract linked URLs
+      // Check if this is a tweet - if so, extract linked URLs (NEVER save the tweet URL itself)
       if (isTweetUrl(args.url)) {
         console.log(`Detected tweet URL, extracting linked URLs...`);
         const extractedUrls = await extractLinksFromTweet(args.url);
@@ -411,8 +374,12 @@ export const processSingleUrl = internalAction({
           }
         }
 
-        // If no links extracted, fall through to process the tweet itself
-        console.log(`No external links found in tweet, saving tweet URL itself`);
+        // NEVER save tweet URLs - skip them entirely if no external links found
+        console.log(`No external links found in tweet, skipping tweet URL (not saving)`);
+        return {
+          success: false,
+          error: "No external links found in tweet",
+        };
       }
 
       // Standard URL processing

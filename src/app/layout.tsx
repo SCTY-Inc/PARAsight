@@ -13,6 +13,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
+      <head>
+        <title>Parasight - PARA-based Link Manager</title>
+        <meta
+          name="description"
+          content="Organize your links using the PARA method (Projects, Areas, Resources, Archive) with AI-powered classification"
+        />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <link rel="icon" href="/favicon.ico" />
+      </head>
       <body>
         {convexClient ? (
           <ConvexProvider client={convexClient}>{children}</ConvexProvider>

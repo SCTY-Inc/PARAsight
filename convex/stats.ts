@@ -1,10 +1,15 @@
 import { query } from "./_generated/server";
 
-// Get dashboard stats
+// Get dashboard stats with optimized queries
 export const getDashboardStats = query({
   args: {},
   handler: async (ctx) => {
-    const allLinks = await ctx.db.query("links").collect();
+    // Use indexed query with limit for better performance
+    const allLinks = await ctx.db
+      .query("links")
+      .withIndex("by_createdAt")
+      .order("desc")
+      .take(1000); // Limit scan for performance
 
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -46,23 +51,19 @@ export const getDashboardStats = query({
       }
     });
 
-    // Sort ALL links by date descending to get most recent
-    const sortedLinks = [...allLinks].sort((a, b) => {
-      const dateA = new Date(a.createdAt || 0).getTime();
-      const dateB = new Date(b.createdAt || 0).getTime();
-      return dateB - dateA;
-    });
-
     // Top tags
     const topTags = Object.entries(tagCounts)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 10)
       .map(([tag, count]) => ({ tag, count }));
 
+    // Recent links are already sorted by createdAt desc
+    const recentLinks = allLinks.slice(0, 8);
+
     return {
       total: allLinks.length,
       bucketCounts,
-      recentLinks: sortedLinks.slice(0, 8), // Most recent 8 links (regardless of date)
+      recentLinks,
       addedThisWeek,
       topTags,
     };

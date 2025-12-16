@@ -1,7 +1,8 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { normalizeUrl } from "./lib/urlUtils";
 
-// List links by PARA bucket
+// List links by PARA bucket with pagination
 export const listByBucket = query({
   args: {
     bucket: v.union(
@@ -10,13 +11,15 @@ export const listByBucket = query({
       v.literal("Resource"),
       v.literal("Archive")
     ),
+    limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const limit = args.limit ?? 100;
     return await ctx.db
       .query("links")
       .withIndex("by_para_bucket", (q) => q.eq("para.bucket", args.bucket))
       .order("desc")
-      .take(100);
+      .take(limit);
   },
 });
 
@@ -28,11 +31,18 @@ export const get = query({
   },
 });
 
-// Get all links
+// Get all links with optional pagination
 export const listAll = query({
-  args: {},
-  handler: async (ctx) => {
-    return await ctx.db.query("links").collect();
+  args: {
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 500;
+    return await ctx.db
+      .query("links")
+      .withIndex("by_createdAt")
+      .order("desc")
+      .take(limit);
   },
 });
 
@@ -41,13 +51,21 @@ export const search = query({
   args: {
     query: v.optional(v.string()),
     tag: v.optional(v.string()),
+    limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    let links = await ctx.db.query("links").collect();
+    const limit = args.limit ?? 100;
+
+    // Start with indexed query for better performance
+    let links = await ctx.db
+      .query("links")
+      .withIndex("by_createdAt")
+      .order("desc")
+      .take(limit * 2); // Fetch more to account for filtering
 
     // Filter by tag if provided
     if (args.tag) {
-      links = links.filter(link => link.tags?.includes(args.tag!));
+      links = links.filter((link) => link.tags?.includes(args.tag!));
     }
 
     // Filter by search query if provided
@@ -58,39 +76,61 @@ export const search = query({
           link.title?.toLowerCase().includes(q) ||
           link.description?.toLowerCase().includes(q) ||
           link.url.toLowerCase().includes(q) ||
-          link.tags?.some(tag => tag.toLowerCase().includes(q))
+          link.tags?.some((tag) => tag.toLowerCase().includes(q))
       );
     }
 
-    return links;
+    return links.slice(0, limit);
   },
 });
 
 // List links by tag
 export const listByTag = query({
-  args: { tag: v.string() },
+  args: {
+    tag: v.string(),
+    limit: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
-    const allLinks = await ctx.db.query("links").collect();
-    return allLinks.filter(link => link.tags?.includes(args.tag));
+    const limit = args.limit ?? 100;
+
+    // Use createdAt index for ordered results, then filter
+    const links = await ctx.db
+      .query("links")
+      .withIndex("by_createdAt")
+      .order("desc")
+      .take(limit * 3); // Fetch more to account for filtering
+
+    return links.filter((link) => link.tags?.includes(args.tag)).slice(0, limit);
   },
 });
 
-// Get all unique tags with counts
+// Get all unique tags with counts (cached query - results don't need real-time updates)
 export const getAllTags = query({
-  args: {},
-  handler: async (ctx) => {
-    const allLinks = await ctx.db.query("links").collect();
+  args: {
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 50;
+
+    // Limit the scan for better performance
+    const links = await ctx.db
+      .query("links")
+      .withIndex("by_createdAt")
+      .order("desc")
+      .take(1000);
+
     const tagCounts: Record<string, number> = {};
 
-    allLinks.forEach(link => {
-      link.tags?.forEach(tag => {
+    links.forEach((link) => {
+      link.tags?.forEach((tag) => {
         tagCounts[tag] = (tagCounts[tag] || 0) + 1;
       });
     });
 
     return Object.entries(tagCounts)
       .map(([tag, count]) => ({ tag, count }))
-      .sort((a, b) => b.count - a.count);
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit);
   },
 });
 
@@ -125,7 +165,7 @@ export const updateLink = mutation({
   handler: async (ctx, args) => {
     const { id, ...updates } = args;
     const filtered = Object.fromEntries(
-      Object.entries(updates).filter(([_, v]) => v !== undefined)
+      Object.entries(updates).filter(([, value]) => value !== undefined)
     );
     await ctx.db.patch(id, filtered);
     return { success: true };
@@ -160,29 +200,6 @@ export const moveMany = mutation({
   },
 });
 
-// Normalize URL for deduplication
-function normalizeUrl(url: string): string {
-  try {
-    const urlObj = new URL(url);
-    urlObj.protocol = 'https:';
-    urlObj.hostname = urlObj.hostname.replace(/^www\./, '');
-    urlObj.hash = '';
-    const trackingParams = [
-      'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-      '_bhlid', 'ref', 'source', 'fbclid', 'gclid', 'msclkid',
-      'mc_cid', 'mc_eid', '_hsenc', '_hsmi', 'si', 's', 't',
-    ];
-    trackingParams.forEach(param => urlObj.searchParams.delete(param));
-    if (urlObj.pathname.endsWith('/') && urlObj.pathname.length > 1) {
-      urlObj.pathname = urlObj.pathname.slice(0, -1);
-    }
-    urlObj.searchParams.sort();
-    return urlObj.toString().toLowerCase();
-  } catch {
-    return url.toLowerCase();
-  }
-}
-
 // One-time cleanup: remove duplicate links (keeps the oldest)
 export const deduplicate = mutation({
   args: {},
@@ -215,6 +232,10 @@ export const deduplicate = mutation({
       }
     }
 
-    return { deletedCount, totalBefore: allLinks.length, totalAfter: allLinks.length - deletedCount };
+    return {
+      deletedCount,
+      totalBefore: allLinks.length,
+      totalAfter: allLinks.length - deletedCount,
+    };
   },
 });
