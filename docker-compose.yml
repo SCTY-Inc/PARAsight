@@ -1,0 +1,37 @@
+services:
+  parasight:
+    build: .
+    container_name: parasight
+    restart: unless-stopped
+    environment:
+      - PARASIGHT_API_KEY=${PARASIGHT_API_KEY}
+      - PORT=18790
+      - LINKS_FILE=/data/links.md
+    volumes:
+      - ./data:/data
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik
+      - traefik.http.routers.parasight-http.rule=Host(`links.scty.org`)
+      - traefik.http.routers.parasight-http.entrypoints=http
+      - traefik.http.routers.parasight-http.middlewares=redirect-to-https
+      - traefik.http.routers.parasight-https.rule=Host(`links.scty.org`)
+      - traefik.http.routers.parasight-https.entrypoints=https
+      - traefik.http.routers.parasight-https.tls=true
+      - traefik.http.routers.parasight-https.tls.certresolver=letsencrypt
+      - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
+      - traefik.http.services.parasight.loadbalancer.server.port=18790
+      # Prompts library
+      - traefik.http.routers.prompts-http.rule=Host(`links.scty.org`) && PathPrefix(`/prompts`)
+      - traefik.http.routers.prompts-http.entrypoints=http
+      - traefik.http.routers.prompts-http.middlewares=redirect-to-https
+      - traefik.http.routers.prompts-https.rule=Host(`links.scty.org`) && PathPrefix(`/prompts`)
+      - traefik.http.routers.prompts-https.entrypoints=https
+      - traefik.http.routers.prompts-https.tls=true
+      - traefik.http.routers.prompts-https.tls.certresolver=letsencrypt
+    networks:
+      - traefik
+
+networks:
+  traefik:
+    external: true
