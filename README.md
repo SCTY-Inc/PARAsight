@@ -1,50 +1,47 @@
-# Parasight
+# Linkdrop
 
-Link saver with Twitter/X URL extraction. Saves links to markdown, serves them at [links.scty.org](https://links.scty.org).
+Save links from your phone's share sheet to a markdown file. Self-hosted, minimal, no database.
 
-## Features
+## How it works
 
-- **Save links** via POST webhook with API key auth
-- **Twitter extraction** - automatically extracts URLs from tweets (resolves t.co redirects)
-- **Web UI** - minimal dark interface showing saved links by date
-- **iOS Shortcut** - setup page at `/shortcut` for Safari share sheet integration
-- **JSON API** - `GET /api/links` returns all links as JSON
+1. **Save** — tap Share in Safari (or any browser), run the iOS Shortcut (setup at `/shortcut`)
+2. **Browse** — a minimal dark web UI shows saved links grouped by date
+3. **Consume** — `GET /api/links` returns all links as JSON for scripts, agents, or downstream tools
+
+Twitter/X links are automatically unpacked: Linkdrop resolves t.co redirects and saves the actual URLs instead of the tweet.
 
 ## Endpoints
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/` | No | Web UI with saved links |
+| GET | `/` | No | Web UI — saved links by date |
 | GET | `/health` | No | Health check |
 | GET | `/shortcut` | No | iOS Shortcut setup instructions |
-| GET | `/api/links` | No | JSON list of all links |
+| GET | `/api/links` | No | All links as JSON |
 | POST | `/links` | Bearer token | Save a new link |
 
-## API Usage
+## API
 
 ```bash
-curl -X POST https://links.scty.org/links \
+curl -X POST https://your-domain.com/links \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://example.com", "title": "Example"}'
 ```
 
-When saving a Twitter/X URL, Parasight extracts linked URLs from the tweet and saves those instead.
-
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `PARASIGHT_API_KEY` | Yes | Bearer token for POST auth |
+| `LINKDROP_API_KEY` | Yes | Bearer token for POST auth |
 | `PORT` | No | Server port (default: 18790) |
 | `LINKS_FILE` | No | Path to markdown file (default: ./links.md) |
-| `PROMPTS_DIR` | No | Static files directory for /prompts |
 
 ## Run
 
 ```bash
 # Direct
-PARASIGHT_API_KEY=your-key node server.js
+LINKDROP_API_KEY=your-key node server.js
 
 # Docker
 docker compose up -d

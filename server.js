@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Parasight Link Saver
- * Simple webhook that appends URLs to a markdown file
+ * Linkdrop
+ * Save links from share sheet to markdown
  */
 
 const http = require('http');
@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 18790;
-const API_KEY = process.env.PARASIGHT_API_KEY;
+const API_KEY = process.env.LINKDROP_API_KEY || process.env.PARASIGHT_API_KEY;
 const LINKS_FILE = process.env.LINKS_FILE || path.join(__dirname, 'links.md');
 const PROMPTS_DIR = process.env.PROMPTS_DIR || path.join(__dirname, 'prompts');
 
@@ -22,7 +22,7 @@ function isTwitterUrl(url) {
 
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'Parasight/1.0' } }, (res) => {
+    https.get(url, { headers: { 'User-Agent': 'Linkdrop/1.0' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         resolve({ redirect: res.headers.location });
         return;
@@ -102,7 +102,7 @@ async function extractUrlsFromTweet(tweetUrl) {
 // ============ End Twitter Extraction ============
 
 if (!API_KEY) {
-  console.error('ERROR: PARASIGHT_API_KEY environment variable required');
+  console.error('ERROR: LINKDROP_API_KEY environment variable required');
   process.exit(1);
 }
 
@@ -191,8 +191,8 @@ ${sections}
 </html>`;
 }
 
-function getShortcutPage() {
-  const apiKey = 'd7hAKCwkNERupsdhWGUWDjsU9Ob2U2WN';
+function getShortcutPage(host) {
+  const baseUrl = host ? `https://${host}` : 'https://your-domain.com';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -259,10 +259,10 @@ function getShortcutPage() {
   </style>
 </head>
 <body>
-  <h1>📎 Save Link Shortcut</h1>
+  <h1>Save Link Shortcut</h1>
   <p>Add this shortcut to quickly save links from Safari's share sheet.</p>
 
-  <h2>Manual Setup (2 minutes)</h2>
+  <h2>Setup (2 minutes)</h2>
 
   <div class="step">
     <span class="step-num">1</span>
@@ -277,17 +277,17 @@ function getShortcutPage() {
   <div class="step">
     <span class="step-num">3</span>
     <strong>Configure the action:</strong><br><br>
-    URL: <code>https://links.scty.org/links</code><br><br>
+    URL: <code>${baseUrl}/links</code><br><br>
     Method: <code>POST</code><br><br>
     Headers (tap "Add new header" twice):<br>
     <div class="code-block">
-      Authorization: Bearer ${apiKey}<br>
+      Authorization: Bearer YOUR_API_KEY<br>
       Content-Type: application/json
     </div>
     Request Body: <code>JSON</code><br><br>
     Add two fields:<br>
-    • <code>url</code> → Select "Shortcut Input"<br>
-    • <code>title</code> → Add action "Get Name" first, then select it
+    &bull; <code>url</code> &rarr; Select "Shortcut Input"<br>
+    &bull; <code>title</code> &rarr; Add action "Get Name" first, then select it
   </div>
 
   <div class="step">
@@ -297,16 +297,12 @@ function getShortcutPage() {
 
   <div class="step">
     <span class="step-num">5</span>
-    <strong>Tap the settings icon</strong> (top right) → enable "Show in Share Sheet"<br>
+    <strong>Tap the settings icon</strong> (top right) &rarr; enable "Show in Share Sheet"<br>
     Set "Receives" to "URLs"
   </div>
 
   <h2>Test It</h2>
   <p>Open Safari, tap Share, and select "Save Link" from your shortcuts.</p>
-
-  <h2>API Key (for copy/paste)</h2>
-  <div class="code-block" id="apikey">${apiKey}</div>
-  <button class="copy-btn" onclick="navigator.clipboard.writeText('${apiKey}')">Copy API Key</button>
 
 </body>
 </html>`;
@@ -443,7 +439,7 @@ const server = http.createServer((req, res) => {
   // Shortcut installer page
   if (req.method === 'GET' && req.url === '/shortcut') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(getShortcutPage());
+    res.end(getShortcutPage(req.headers.host));
     return;
   }
 
@@ -498,6 +494,6 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Parasight running on http://127.0.0.1:${PORT}`);
+  console.log(`Linkdrop running on http://127.0.0.1:${PORT}`);
   console.log(`Links file: ${LINKS_FILE}`);
 });
