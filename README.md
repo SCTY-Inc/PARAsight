@@ -1,14 +1,16 @@
 # Linkdrop
 
-Save links from your phone's share sheet to a markdown file. Self-hosted, minimal, no database.
+A link inbox for humans and agents. Save URLs from your phone's share sheet, browse them in a minimal web UI, and let AI agents consume them via JSON API or markdown.
+
+No database — just a markdown file.
 
 ## How it works
 
-1. **Save** — tap Share in Safari (or any browser), run the iOS Shortcut (setup at `/shortcut`)
-2. **Browse** — a minimal dark web UI shows saved links grouped by date
-3. **Consume** — `GET /api/links` returns all links as JSON for scripts, agents, or downstream tools
+1. **Drop** — tap Share in Safari, run the iOS Shortcut (setup at `/shortcut`)
+2. **Browse** — minimal dark web UI shows saved links grouped by date
+3. **Feed agents** — `GET /api/links` returns JSON; the raw `links.md` file is readable by any agent or script
 
-Twitter/X links are automatically unpacked: Linkdrop resolves t.co redirects and saves the actual URLs instead of the tweet.
+Twitter/X links are automatically unpacked — Linkdrop resolves t.co redirects and saves the actual URLs instead of the tweet.
 
 ## Endpoints
 
