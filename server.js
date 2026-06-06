@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 18790;
-const API_KEY = process.env.LINKDROP_API_KEY || process.env.PARASIGHT_API_KEY;
+const API_KEY = process.env.LINKDROP_API_KEY;
 const LINKS_FILE = process.env.LINKS_FILE || path.join(__dirname, 'links.md');
 const PROMPTS_DIR = process.env.PROMPTS_DIR || path.join(__dirname, 'prompts');
 
