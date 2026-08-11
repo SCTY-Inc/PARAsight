@@ -1,37 +1,12 @@
 services:
-  linkdrop:
+  drop:
     build: .
-    container_name: linkdrop
+    container_name: drop
     restart: unless-stopped
     environment:
-      - LINKDROP_API_KEY=${LINKDROP_API_KEY}
       - PORT=18790
-      - LINKS_FILE=/data/links.md
+      - CAPTURE_DIR=/raw
     volumes:
-      - ./data:/data
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=traefik
-      - traefik.http.routers.linkdrop-http.rule=Host(`links.scty.org`)
-      - traefik.http.routers.linkdrop-http.entrypoints=http
-      - traefik.http.routers.linkdrop-http.middlewares=redirect-to-https
-      - traefik.http.routers.linkdrop-https.rule=Host(`links.scty.org`)
-      - traefik.http.routers.linkdrop-https.entrypoints=https
-      - traefik.http.routers.linkdrop-https.tls=true
-      - traefik.http.routers.linkdrop-https.tls.certresolver=letsencrypt
-      - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
-      - traefik.http.services.linkdrop.loadbalancer.server.port=18790
-      # Prompts library
-      - traefik.http.routers.prompts-http.rule=Host(`links.scty.org`) && PathPrefix(`/prompts`)
-      - traefik.http.routers.prompts-http.entrypoints=http
-      - traefik.http.routers.prompts-http.middlewares=redirect-to-https
-      - traefik.http.routers.prompts-https.rule=Host(`links.scty.org`) && PathPrefix(`/prompts`)
-      - traefik.http.routers.prompts-https.entrypoints=https
-      - traefik.http.routers.prompts-https.tls=true
-      - traefik.http.routers.prompts-https.tls.certresolver=letsencrypt
-    networks:
-      - traefik
-
-networks:
-  traefik:
-    external: true
+      - ./data:/raw
+    ports:
+      - "${DROP_BIND_IP:-127.0.0.1}:18790:18790"

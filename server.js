@@ -1,499 +1,352 @@
 #!/usr/bin/env node
-/**
- * Linkdrop
- * Save links from share sheet to markdown
- */
 
-const http = require('http');
-const https = require('https');
-const fs = require('fs');
-const path = require('path');
+const crypto = require("node:crypto");
+const fs = require("node:fs/promises");
+const http = require("node:http");
+const path = require("node:path");
 
-const PORT = process.env.PORT || 18790;
-const API_KEY = process.env.LINKDROP_API_KEY;
-const LINKS_FILE = process.env.LINKS_FILE || path.join(__dirname, 'links.md');
-const PROMPTS_DIR = process.env.PROMPTS_DIR || path.join(__dirname, 'prompts');
+const DEFAULT_PORT = 18790;
+const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 
-// ============ Twitter URL Extraction ============
-
-function isTwitterUrl(url) {
-  return /^https?:\/\/(x\.com|twitter\.com)\/\w+\/status\/\d+/.test(url);
-}
-
-function httpsGet(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'Linkdrop/1.0' } }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        resolve({ redirect: res.headers.location });
-        return;
-      }
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve({ data, statusCode: res.statusCode }));
-    }).on('error', reject);
+function json(res, status, body) {
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
   });
+  res.end(JSON.stringify(body));
 }
 
-async function followRedirect(url, maxHops = 5) {
-  let current = url;
-  for (let i = 0; i < maxHops; i++) {
-    try {
-      const result = await httpsGet(current);
-      if (result.redirect) {
-        current = result.redirect;
-      } else {
-        return current;
-      }
-    } catch {
-      return current;
-    }
+async function readLimited(req, maxBytes) {
+  const declared = Number(req.headers["content-length"] || 0);
+  if (declared > maxBytes) throw Object.assign(new Error("Capture is too large"), { status: 413 });
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) throw Object.assign(new Error("Capture is too large"), { status: 413 });
+    chunks.push(chunk);
   }
-  return current;
+  return Buffer.concat(chunks);
 }
 
-async function extractUrlsFromTweet(tweetUrl) {
+function cleanString(value, maxLength) {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+function httpUrl(value) {
+  if (!value) return "";
   try {
-    // Normalize to twitter.com for oembed
-    const normalizedUrl = tweetUrl.replace('x.com', 'twitter.com');
-    const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(normalizedUrl)}`;
-
-    const result = await httpsGet(oembedUrl);
-    if (!result.data) return null;
-
-    const oembed = JSON.parse(result.data);
-    const html = oembed.html || '';
-
-    // Extract t.co URLs from the tweet HTML (dedupe)
-    const tcoMatches = [...new Set(html.match(/https:\/\/t\.co\/\w+/g) || [])];
-
-    if (tcoMatches.length === 0) return null;
-
-    // Follow redirects to get actual URLs
-    const seenUrls = new Set();
-    const resolvedUrls = [];
-
-    // Get the tweet's status ID to filter self-references
-    const statusMatch = tweetUrl.match(/status\/(\d+)/);
-    const statusId = statusMatch ? statusMatch[1] : null;
-
-    for (const tco of tcoMatches) {
-      const resolved = await followRedirect(tco);
-
-      // Skip exact self-references (link back to this tweet) and duplicates
-      const isSelfRef = statusId && resolved.includes(`/status/${statusId}`);
-
-      if (!isSelfRef && !seenUrls.has(resolved)) {
-        seenUrls.add(resolved);
-        resolvedUrls.push(resolved);
-      }
-    }
-
-    return {
-      urls: resolvedUrls,
-      author: oembed.author_name,
-      tweetUrl: tweetUrl
-    };
-  } catch (e) {
-    console.error('Tweet extraction failed:', e.message);
-    return null;
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : "";
+  } catch {
+    return "";
   }
 }
 
-// ============ End Twitter Extraction ============
-
-if (!API_KEY) {
-  console.error('ERROR: LINKDROP_API_KEY environment variable required');
-  process.exit(1);
+function safeName(value, fallback = "attachment") {
+  const base = path.basename(value || fallback).normalize("NFKC");
+  const cleaned = base.replace(/[^\p{L}\p{N}._ -]+/gu, "-").replace(/\s+/g, "-").slice(0, 120);
+  if (!cleaned || cleaned === "." || cleaned === "..") return fallback;
+  return cleaned.toLowerCase() === "capture.md" ? `attachment-${cleaned}` : cleaned;
 }
 
-// Ensure links file exists
-if (!fs.existsSync(LINKS_FILE)) {
-  fs.writeFileSync(LINKS_FILE, '# Saved Links\n\n');
+function slug(value) {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60)
+    .replace(/-$/, "") || "capture";
 }
 
-function parseLinks(content) {
-  const links = [];
-  const lines = content.split('\n');
-  let currentDate = '';
-
-  for (const line of lines) {
-    const dateMatch = line.match(/^## (\d{4}-\d{2}-\d{2})/);
-    if (dateMatch) {
-      currentDate = dateMatch[1];
-      continue;
-    }
-
-    const linkMatch = line.match(/^- \[(\d{2}:\d{2})\] \[([^\]]+)\]\(([^)]+)\)/);
-    if (linkMatch) {
-      links.push({ date: currentDate, time: linkMatch[1], title: linkMatch[2], url: linkMatch[3] });
-      continue;
-    }
-
-    const bareMatch = line.match(/^- \[(\d{2}:\d{2})\] <([^>]+)>/);
-    if (bareMatch) {
-      links.push({ date: currentDate, time: bareMatch[1], title: '', url: bareMatch[2] });
-    }
-  }
-
-  return links.reverse(); // newest first
+function quoted(value) {
+  return JSON.stringify(value);
 }
 
-function renderLinksPage(content) {
-  const links = parseLinks(content);
-
-  // Group by date
-  const byDate = {};
-  for (const l of links) {
-    if (!byDate[l.date]) byDate[l.date] = [];
-    byDate[l.date].push(l);
-  }
-
-  // Format URL for display (strip protocol, truncate)
-  const formatUrl = (url) => {
+async function parseCapture(req, maxBytes) {
+  const contentType = req.headers["content-type"] || "";
+  if (contentType.startsWith("application/json")) {
+    let data;
     try {
-      const u = new URL(url);
-      let display = u.hostname.replace(/^www\./, '') + u.pathname;
-      if (display.length > 50) display = display.slice(0, 47) + '...';
-      return display;
-    } catch {
-      return url.length > 50 ? url.slice(0, 47) + '...' : url;
+      data = JSON.parse((await readLimited(req, maxBytes)).toString("utf8"));
+    } catch (error) {
+      if (error.status) throw error;
+      throw Object.assign(new Error("Request body must be valid JSON"), { status: 400 });
     }
-  };
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw Object.assign(new Error("Request body must be an object"), { status: 400 });
+    }
+    const explicitUrl = cleanString(data.url, 8_000);
+    const text = cleanString(data.text ?? data.content, 1_000_000);
+    const url = httpUrl(explicitUrl || text);
+    return {
+      url,
+      text: explicitUrl ? text : url ? "" : text,
+      title: cleanString(data.title, 300),
+      note: cleanString(data.note, 10_000),
+      channel: cleanString(data.channel, 80),
+      file: null,
+    };
+  }
 
-  const sections = Object.entries(byDate).map(([date, items]) => {
-    const rows = items.map(l => {
-      const display = l.title || formatUrl(l.url);
-      return `<a href="${l.url}">${display}</a>`;
-    }).join('\n');
-    return `<section><div class="label">${date}</div>\n${rows}</section>`;
-  }).join('\n');
+  if (contentType.startsWith("multipart/form-data")) {
+    const body = await readLimited(req, maxBytes);
+    const request = new Request("http://drop.local/capture", {
+      method: "POST",
+      headers: { "content-type": contentType },
+      body,
+    });
+    let form;
+    try {
+      form = await request.formData();
+    } catch {
+      throw Object.assign(new Error("Invalid upload form"), { status: 400 });
+    }
+    const content = cleanString(form.get("content"), 1_000_000);
+    const explicitUrl = cleanString(form.get("url"), 8_000);
+    const url = httpUrl(explicitUrl || content);
+    const upload = form.get("file");
+    const file = upload && typeof upload.arrayBuffer === "function" && upload.size > 0
+      ? {
+          name: safeName(upload.name),
+          mediaType: cleanString(upload.type, 200) || "application/octet-stream",
+          bytes: Buffer.from(await upload.arrayBuffer()),
+        }
+      : null;
+    return {
+      url,
+      text: explicitUrl ? content : url ? "" : content,
+      title: cleanString(form.get("title"), 300),
+      note: cleanString(form.get("note"), 10_000),
+      channel: cleanString(form.get("channel"), 80),
+      file,
+    };
+  }
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>links</title>
-  <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font: 15px/1.6 -apple-system, system-ui, sans-serif; background: #111; color: #888; padding: 2rem; max-width: 800px; margin: 0 auto; }
-h1 { color: #ccc; font-size: 14px; font-weight: normal; letter-spacing: 0.5px; margin-bottom: 2rem; }
-section { margin-bottom: 2rem; }
-.label { font-size: 12px; color: #555; margin-bottom: 0.5rem; }
-a { display: block; color: #ccc; text-decoration: none; padding: 0.2rem 0; }
-a:hover { color: #fff; }
-  </style>
-</head>
-<body>
-  <h1>links</h1>
-${sections}
-</body>
-</html>`;
+  throw Object.assign(new Error("Use JSON or multipart form data"), { status: 415 });
 }
 
-function getShortcutPage(host) {
-  const baseUrl = host ? `https://${host}` : 'https://your-domain.com';
-  return `<!DOCTYPE html>
+function captureTitle(capture) {
+  if (capture.title) return capture.title;
+  if (capture.file) return capture.file.name;
+  if (capture.url) return new URL(capture.url).hostname.replace(/^www\./, "");
+  return "Text capture";
+}
+
+function captureRecord(capture, capturedAt, hash, attachmentName) {
+  const title = captureTitle(capture);
+  const sourceType = capture.file ? "file" : capture.url ? "link" : "text";
+  const frontmatter = [
+    "---",
+    `title: ${quoted(title)}`,
+    'type: "source"',
+    'status: "raw"',
+    'privacy_tier: "private"',
+    `source_type: ${quoted(sourceType)}`,
+    `captured_at: ${quoted(capturedAt)}`,
+    `channel: ${quoted(capture.channel)}`,
+    `content_sha256: ${quoted(hash)}`,
+  ];
+  if (capture.url) frontmatter.push(`url: ${quoted(capture.url)}`);
+  if (capture.note) frontmatter.push(`note: ${quoted(capture.note)}`);
+  if (attachmentName) {
+    frontmatter.push(`attachment: ${quoted(attachmentName)}`);
+    frontmatter.push(`media_type: ${quoted(capture.file.mediaType)}`);
+  }
+  frontmatter.push("---", "", `# ${title}`, "");
+
+  const body = [];
+  if (capture.url) body.push("## Source", "", `<${capture.url}>`, "");
+  if (capture.text) body.push(capture.file ? "## Accompanying text" : "## Content", "", capture.text, "");
+  if (attachmentName) body.push("## Attachment", "", `[${attachmentName}](./${encodeURIComponent(attachmentName)})`, "");
+  if (capture.note) body.push("## Note", "", capture.note, "");
+  return [...frontmatter, ...body].join("\n");
+}
+
+async function saveCapture(captureDir, capture, now) {
+  if (!capture.url && !capture.text && !capture.file) {
+    throw Object.assign(new Error("Add a link, text, or file"), { status: 400 });
+  }
+  if (!capture.channel) capture.channel = "api";
+
+  const fileHash = capture.file
+    ? crypto.createHash("sha256").update(capture.file.bytes).digest("hex")
+    : "";
+  const hash = crypto
+    .createHash("sha256")
+    .update(JSON.stringify({
+      url: capture.url,
+      text: capture.text,
+      title: capture.title,
+      note: capture.note,
+      fileName: capture.file?.name || "",
+      fileHash,
+    }))
+    .digest("hex");
+  const capturedAt = now().toISOString();
+  const directoryName = `${capturedAt.slice(0, 10)}-${hash.slice(0, 12)}-${slug(captureTitle(capture))}`;
+  const relativePath = `${directoryName}/capture.md`;
+  const destination = path.join(captureDir, directoryName);
+
+  await fs.mkdir(captureDir, { recursive: true, mode: 0o700 });
+  try {
+    await fs.access(destination);
+    return { path: relativePath, duplicate: true };
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const temporary = path.join(captureDir, `.tmp-${process.pid}-${crypto.randomUUID()}`);
+  await fs.mkdir(temporary, { mode: 0o700 });
+  try {
+    const attachmentName = capture.file ? safeName(capture.file.name) : "";
+    if (capture.file) {
+      await fs.writeFile(path.join(temporary, attachmentName), capture.file.bytes, { mode: 0o600 });
+    }
+    await fs.writeFile(
+      path.join(temporary, "capture.md"),
+      captureRecord(capture, capturedAt, hash, attachmentName),
+      { mode: 0o600 },
+    );
+    try {
+      await fs.rename(temporary, destination);
+    } catch (error) {
+      if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") throw error;
+      await fs.rm(temporary, { recursive: true, force: true });
+      return { path: relativePath, duplicate: true };
+    }
+  } catch (error) {
+    await fs.rm(temporary, { recursive: true, force: true });
+    throw error;
+  }
+  return { path: relativePath, duplicate: false };
+}
+
+const DROP_PAGE = `<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Install Save Link Shortcut</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="apple-mobile-web-app-title" content="Drop">
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+  <title>Drop</title>
   <style>
     * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      max-width: 600px;
-      margin: 0 auto;
-      padding: 20px;
-      background: #0d1117;
-      color: #c9d1d9;
-      line-height: 1.6;
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px; background: #0c0c0c; color: #f4f4f1; font: 16px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    main { width: min(100%, 620px); }
+    h1 { margin: 0 0 4px; font-size: clamp(28px, 7vw, 44px); letter-spacing: -0.04em; }
+    p { margin: 0 0 24px; color: #999; }
+    form { display: grid; gap: 14px; }
+    label { display: grid; gap: 7px; color: #bbb; font-size: 13px; }
+    textarea, input, button { width: 100%; border: 1px solid #333; border-radius: 10px; background: #151515; color: inherit; font: inherit; }
+    textarea, input { padding: 13px 14px; }
+    textarea { min-height: 150px; resize: vertical; }
+    input[type=file] { padding: 10px; }
+    button { min-height: 50px; border-color: #f4f4f1; background: #f4f4f1; color: #111; font-weight: 700; cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .55; }
+    #status { min-height: 24px; margin: 0; color: #aaa; }
+    @media (prefers-color-scheme: light) {
+      body { background: #f5f5f1; color: #111; }
+      p, #status { color: #666; }
+      label { color: #444; }
+      textarea, input { border-color: #ccc; background: #fff; }
+      button { border-color: #111; background: #111; color: #fff; }
     }
-    h1 { color: #58a6ff; }
-    h2 { color: #8b949e; font-size: 1.1em; margin-top: 30px; }
-    .step {
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 8px;
-      padding: 16px;
-      margin: 12px 0;
-    }
-    .step-num {
-      background: #58a6ff;
-      color: #0d1117;
-      border-radius: 50%;
-      width: 24px;
-      height: 24px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: bold;
-      margin-right: 8px;
-    }
-    code {
-      background: #21262d;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 0.9em;
-      word-break: break-all;
-    }
-    .code-block {
-      background: #21262d;
-      padding: 12px;
-      border-radius: 6px;
-      margin: 10px 0;
-      overflow-x: auto;
-    }
-    .copy-btn {
-      background: #238636;
-      color: white;
-      border: none;
-      padding: 8px 16px;
-      border-radius: 6px;
-      cursor: pointer;
-      margin-top: 8px;
-    }
-    .copy-btn:active { background: #2ea043; }
-    a { color: #58a6ff; }
   </style>
 </head>
 <body>
-  <h1>Save Link Shortcut</h1>
-  <p>Add this shortcut to quickly save links from Safari's share sheet.</p>
-
-  <h2>Setup (2 minutes)</h2>
-
-  <div class="step">
-    <span class="step-num">1</span>
-    <strong>Open Shortcuts app</strong> and tap <strong>+</strong> to create new shortcut
-  </div>
-
-  <div class="step">
-    <span class="step-num">2</span>
-    <strong>Add action:</strong> "Get Contents of URL"
-  </div>
-
-  <div class="step">
-    <span class="step-num">3</span>
-    <strong>Configure the action:</strong><br><br>
-    URL: <code>${baseUrl}/links</code><br><br>
-    Method: <code>POST</code><br><br>
-    Headers (tap "Add new header" twice):<br>
-    <div class="code-block">
-      Authorization: Bearer YOUR_API_KEY<br>
-      Content-Type: application/json
-    </div>
-    Request Body: <code>JSON</code><br><br>
-    Add two fields:<br>
-    &bull; <code>url</code> &rarr; Select "Shortcut Input"<br>
-    &bull; <code>title</code> &rarr; Add action "Get Name" first, then select it
-  </div>
-
-  <div class="step">
-    <span class="step-num">4</span>
-    <strong>Tap the name</strong> at top, rename to "Save Link"
-  </div>
-
-  <div class="step">
-    <span class="step-num">5</span>
-    <strong>Tap the settings icon</strong> (top right) &rarr; enable "Show in Share Sheet"<br>
-    Set "Receives" to "URLs"
-  </div>
-
-  <h2>Test It</h2>
-  <p>Open Safari, tap Share, and select "Save Link" from your shortcuts.</p>
-
+  <main>
+    <h1>Drop</h1>
+    <p>Capture now. Sort it out later.</p>
+    <form id="drop-form">
+      <label>Paste a link or text<textarea name="content" autofocus placeholder="https://… or anything worth keeping"></textarea></label>
+      <label>File<input name="file" type="file"></label>
+      <label>Note (optional)<input name="note" placeholder="Why does this matter?"></label>
+      <button type="submit">Save</button>
+      <p id="status" role="status" aria-live="polite"></p>
+    </form>
+  </main>
+  <script>
+    const form = document.querySelector("#drop-form");
+    const button = form.querySelector("button");
+    const status = document.querySelector("#status");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      status.textContent = "Saving…";
+      button.disabled = true;
+      const body = new FormData(form);
+      body.set("channel", "web-drop");
+      try {
+        const response = await fetch("capture", { method: "POST", body });
+        const receipt = await response.json();
+        if (!response.ok) throw new Error(receipt.error || "Capture failed");
+        status.textContent = receipt.duplicate ? "Already captured." : "Captured.";
+        form.elements.content.value = "";
+        form.elements.file.value = "";
+        form.elements.note.value = "";
+        form.elements.content.focus();
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>`;
-}
 
-function getDateHeader() {
-  const now = new Date();
-  return now.toISOString().split('T')[0]; // YYYY-MM-DD
-}
+function createDropServer({ captureDir, now = () => new Date(), maxBytes = DEFAULT_MAX_BYTES }) {
+  if (!captureDir) throw new Error("CAPTURE_DIR is required");
 
-function getTimeStamp() {
-  const now = new Date();
-  return now.toTimeString().split(' ')[0].slice(0, 5); // HH:MM
-}
-
-function appendLinkEntry(url, title, source = null) {
-  const today = getDateHeader();
-  const time = getTimeStamp();
-
-  let content = fs.readFileSync(LINKS_FILE, 'utf8');
-
-  // Check if today's section exists
-  if (!content.includes(`## ${today}`)) {
-    content += `\n## ${today}\n\n`;
-  }
-
-  // Format the link entry
-  let entry;
-  if (title) {
-    entry = `- [${time}] [${title}](${url})`;
-  } else {
-    entry = `- [${time}] <${url}>`;
-  }
-
-  // Add source attribution for extracted links
-  if (source) {
-    entry += ` *(via [@${source.author}](${source.tweetUrl}))*`;
-  }
-  entry += '\n';
-
-  // Append to today's section
-  const sections = content.split(/(?=\n## \d{4}-\d{2}-\d{2})/);
-  const lastSection = sections[sections.length - 1];
-  sections[sections.length - 1] = lastSection + entry;
-
-  fs.writeFileSync(LINKS_FILE, sections.join(''));
-  return { date: today, time, url, title, source };
-}
-
-async function appendLink(url, title) {
-  // Check if it's a Twitter/X URL
-  if (isTwitterUrl(url)) {
-    console.log(`Detected tweet URL, extracting links...`);
-    const extracted = await extractUrlsFromTweet(url);
-
-    if (extracted && extracted.urls.length > 0) {
-      // Save extracted URLs instead of tweet
-      const results = [];
-      for (const extractedUrl of extracted.urls) {
-        const result = appendLinkEntry(extractedUrl, null, {
-          author: extracted.author,
-          tweetUrl: url
-        });
-        results.push(result);
-        console.log(`Extracted: ${extractedUrl} (from @${extracted.author})`);
-      }
-      return results[0]; // Return first for response
-    } else {
-      console.log(`No external links found in tweet, saving tweet URL`);
-    }
-  }
-
-  // Regular URL or fallback
-  return appendLinkEntry(url, title);
-}
-
-const server = http.createServer((req, res) => {
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  // Health check
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok' }));
-    return;
-  }
-
-  // Prompts library static files (handles /prompts path from both direct access and Traefik addPrefix)
-  if (req.method === 'GET' && req.url.startsWith('/prompts')) {
-    // Strip /prompts prefix, query string, and default to index.html
-    let urlPath = req.url.split('?')[0].replace(/^\/prompts\/?/, '/');
-    if (urlPath === '/' || urlPath === '') urlPath = '/index.html';
-
-    const filePath = path.join(PROMPTS_DIR, urlPath);
-
-    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-      const ext = path.extname(filePath);
-      const contentType = {
-        '.html': 'text/html',
-        '.css': 'text/css',
-        '.js': 'application/javascript',
-        '.json': 'application/json',
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.svg': 'image/svg+xml',
-      }[ext] || 'text/plain';
-
+  return http.createServer(async (req, res) => {
+    const pathname = new URL(req.url, "http://drop.local").pathname;
+    if (req.method === "GET" && (pathname === "/icon.svg" || pathname === "/apple-touch-icon.png")) {
+      const fileName = pathname.slice(1);
+      const content = await fs.readFile(path.join(__dirname, fileName));
       res.writeHead(200, {
-        'Content-Type': contentType,
-        'Cache-Control': 'no-cache, must-revalidate'
+        "content-type": fileName.endsWith(".svg") ? "image/svg+xml" : "image/png",
+        "cache-control": "public, max-age=86400",
       });
-      res.end(fs.readFileSync(filePath));
-      return;
+      return res.end(content);
     }
-  }
-
-  // Main page - show links
-  if (req.method === 'GET' && (req.url === '/' || req.url === '')) {
-    const content = fs.readFileSync(LINKS_FILE, 'utf8');
-    const html = renderLinksPage(content);
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(html);
-    return;
-  }
-
-  // Shortcut installer page
-  if (req.method === 'GET' && req.url === '/shortcut') {
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(getShortcutPage(req.headers.host));
-    return;
-  }
-
-  // JSON API - get links
-  if (req.method === 'GET' && req.url === '/api/links') {
-    const content = fs.readFileSync(LINKS_FILE, 'utf8');
-    const links = parseLinks(content);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ links }));
-    return;
-  }
-
-  // Only accept POST /links
-  if (req.method !== 'POST' || req.url !== '/links') {
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not found' }));
-    return;
-  }
-
-  // Check auth
-  const auth = req.headers.authorization;
-  if (!auth || auth !== `Bearer ${API_KEY}`) {
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Unauthorized' }));
-    return;
-  }
-
-  // Parse body
-  let body = '';
-  req.on('data', chunk => body += chunk);
-  req.on('end', async () => {
+    if (req.method === "GET" && pathname === "/health") return json(res, 200, { status: "ok" });
+    if (req.method === "GET" && (pathname === "/" || pathname === "/shortcut")) {
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+      });
+      return res.end(DROP_PAGE);
+    }
+    if (req.method !== "POST" || (pathname !== "/capture" && pathname !== "/links")) {
+      return json(res, 404, { error: "Not found" });
+    }
     try {
-      const data = JSON.parse(body);
-
-      if (!data.url) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'url is required' }));
-        return;
+      const capture = await parseCapture(req, maxBytes);
+      if (!capture.channel) {
+        capture.channel = pathname === "/links" ? "ios-share-sheet" : "api";
       }
-
-      const result = await appendLink(data.url, data.title);
-      console.log(`[${result.date} ${result.time}] Saved: ${result.url}`);
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, ...result }));
-    } catch (e) {
-      console.error('Error processing link:', e);
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      const receipt = await saveCapture(captureDir, capture, now);
+      return json(res, receipt.duplicate ? 200 : 201, { success: true, ...receipt });
+    } catch (error) {
+      console.error("Capture failed:", error.message);
+      return json(res, error.status || 500, { error: error.status ? error.message : "Capture failed" });
     }
   });
-});
+}
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Linkdrop running on http://127.0.0.1:${PORT}`);
-  console.log(`Links file: ${LINKS_FILE}`);
-});
+if (require.main === module) {
+  const port = Number(process.env.PORT || DEFAULT_PORT);
+  const server = createDropServer({
+    captureDir: process.env.CAPTURE_DIR || "/raw",
+  });
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`Drop listening on http://127.0.0.1:${port}`);
+    console.log(`Capture directory: ${process.env.CAPTURE_DIR || "/raw"}`);
+  });
+}
+
+module.exports = { createDropServer, saveCapture };

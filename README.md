@@ -1,62 +1,62 @@
-# Linkdrop
+> Diátaxis: reference
 
-A link inbox for humans and agents. Save URLs from your phone's share sheet, browse them in a minimal web UI, and let AI agents consume them via JSON API or markdown.
+# Drop
 
-No database — just a markdown file.
+Drop is one fast capture edge for the Wiki raw corpus. It accepts a link, text, or one file with an optional note. It writes one immutable capture bundle and returns immediately.
 
-## How it works
+Drop does not fetch, classify, summarize, browse, or route work. Later Wiki and Hound workflows consume the raw record.
 
-1. **Drop** — tap Share in Safari, run the iOS Shortcut (setup at `/shortcut`)
-2. **Browse** — minimal dark web UI shows saved links grouped by date
-3. **Feed agents** — `GET /api/links` returns JSON; the raw `links.md` file is readable by any agent or script
+## Surfaces
 
-Twitter/X links are automatically unpacked — Linkdrop resolves t.co redirects and saves the actual URLs instead of the tweet.
+- Web form: `http://atum-vps.tail6bb091.ts.net:18790/`
+- iOS Share Sheet endpoint: `POST http://atum-vps.tail6bb091.ts.net:18790/links`
+- Generic endpoint: `POST http://atum-vps.tail6bb091.ts.net:18790/capture`
+- Health: `GET http://atum-vps.tail6bb091.ts.net:18790/health`
 
-## Endpoints
+Drop is available only on the `scty.org` tailnet. Tailscale owns access control; Drop has no second application key.
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/` | No | Web UI — saved links by date |
-| GET | `/health` | No | Health check |
-| GET | `/shortcut` | No | iOS Shortcut setup instructions |
-| GET | `/api/links` | No | All links as JSON |
-| POST | `/links` | Bearer token | Save a new link |
+The existing iOS Shortcut remains compatible:
 
-## API
-
-```bash
-curl -X POST https://your-domain.com/links \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com", "title": "Example"}'
+```json
+{
+  "content": "Shortcut Input",
+  "title": "Name",
+  "note": "optional"
+}
 ```
 
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `LINKDROP_API_KEY` | Yes | Bearer token for POST auth |
-| `PORT` | No | Server port (default: 18790) |
-| `LINKS_FILE` | No | Path to markdown file (default: ./links.md) |
-
-## Run
-
-```bash
-# Direct
-LINKDROP_API_KEY=your-key node server.js
-
-# Docker
-docker compose up -d
-```
+Send `Content-Type: application/json`. The device must be connected to Tailscale. HTTP is private inside Tailscale's encrypted tunnel; the service is not bound to the public interface.
 
 ## Storage
 
-Links are stored in `links.md` as markdown:
+Each capture is a create-only bundle under `CAPTURE_DIR`:
 
-```markdown
-## 2025-01-25
+```text
+YYYY-MM-DD-<content-hash>-<title>/
+├── capture.md
+└── <attachment>       # only for file captures
+```
 
-- [14:32] [Example Site](https://example.com)
-- [14:35] <https://bare-url.com>
-- [14:40] [Extracted Link](https://extracted.com) *(via [@user](https://x.com/user/status/123))*
+Exact same-day retries return the first receipt without rewriting it. Drop stores no database, feed, mutable link file, or generated catalog.
+
+Production mounts `CAPTURE_DIR` at `/home/deploy/wiki/raw/library/captures`.
+
+## Request formats
+
+JSON accepts `url`, `text` or `content`, `title`, `note`, and `channel`.
+
+Multipart form data accepts `content`, `file`, `title`, `note`, and `channel`. One file is supported.
+
+## Environment
+
+| Variable | Required | Purpose |
+|---|---:|---|
+| `CAPTURE_DIR` | yes in production | Raw capture root; defaults to `/raw` |
+| `PORT` | no | HTTP port; defaults to `18790` |
+
+## Verify
+
+```sh
+node --test test/server.test.js
+docker build -t drop-test .
 ```
