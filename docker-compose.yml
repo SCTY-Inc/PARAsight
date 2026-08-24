@@ -7,6 +7,6 @@ services:
       - PORT=18790
       - CAPTURE_DIR=/raw
     volumes:
-      - ./data:/raw
+      - /home/deploy/wiki/raw/library/captures:/raw
     ports:
       - "${DROP_BIND_IP:-127.0.0.1}:18790:18790"
